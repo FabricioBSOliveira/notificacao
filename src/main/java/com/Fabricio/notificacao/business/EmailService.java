@@ -1,12 +1,18 @@
 package com.Fabricio.notificacao.business;
 
+import com.Fabricio.notificacao.business.dto.StatusTarefaDTO;
 import com.Fabricio.notificacao.business.dto.TarefasDTO;
+import com.Fabricio.notificacao.business.enums.StatusNotificacaoEnum;
 import com.Fabricio.notificacao.infrastructure.exceptions.EmailException;
+import com.Fabricio.notificacao.infrastructure.messages.kafka.producer.KafkaProducer;
 import jakarta.mail.MessagingException;
+import jakarta.mail.internet.AddressException;
 import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.internet.MimeMessage;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.mail.MailAuthenticationException;
+import org.springframework.mail.MailSendException;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
@@ -22,6 +28,7 @@ public class EmailService {
 
     private final JavaMailSender javaMailSender;
     private final TemplateEngine templateEngine;
+    private final KafkaProducer producer;
 
     @Value("${envio.email.remetente}")
     public String remetente;
@@ -35,7 +42,10 @@ public class EmailService {
             MimeMessageHelper mimeMessageHelper = new MimeMessageHelper(mensagem,true, StandardCharsets.UTF_8.name());
 
             mimeMessageHelper.setFrom(new InternetAddress(remetente, nomeRemetente));
-            mimeMessageHelper.setTo(InternetAddress.parse(dto.getEmailUsuario()));
+
+            InternetAddress[] destinarios = InternetAddress.parse(dto.getEmailUsuario());
+
+            mimeMessageHelper.setTo(destinarios);
             mimeMessageHelper.setSubject("Notificacao de Tarefa");
 
             Context context = new Context();
@@ -46,9 +56,32 @@ public class EmailService {
             String template = templateEngine.process("notificacao", context);
             mimeMessageHelper.setText(template,true);
             javaMailSender.send(mensagem);
-        } catch (MessagingException | UnsupportedEncodingException e) {
+
+            producer.enviarStatusTarefa(buildStatus(dto.getId(),StatusNotificacaoEnum.NOTIFICADO));
+        } catch (AddressException e) {
+            producer.enviarStatusTarefa(buildStatus(dto.getId(), StatusNotificacaoEnum.FALHA));
+            throw new EmailException("erro ao enviar o email - email invalido", e.getCause());
+        }
+        catch (MailAuthenticationException e) {
+            producer.enviarStatusTarefa(buildStatus(dto.getId(), StatusNotificacaoEnum.PENDENTE));
+            throw new EmailException("erro ao enviar o email - autentificacao smtp incorreto", e.getCause());
+        }
+
+        catch (MailSendException  e) {
+            producer.enviarStatusTarefa(buildStatus(dto.getId(), StatusNotificacaoEnum.FALHA));
             throw new EmailException("erro ao enviar o email", e.getCause());
         }
+        catch (Exception e){
+            producer.enviarStatusTarefa(buildStatus(dto.getId(), StatusNotificacaoEnum.PENDENTE));
+            throw new EmailException("erro ao enviar o email", e.getCause());
+        }
+    }
+
+    private StatusTarefaDTO buildStatus(String id, StatusNotificacaoEnum status){
+        return StatusTarefaDTO.builder()
+                .id(id)
+                .statusNotificacaoEnum(status)
+                .build();
     }
 
 }
